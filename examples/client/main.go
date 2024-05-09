@@ -127,7 +127,9 @@ func main() {
 			case <-time.After(1 * time.Second):
 			}
 
-			md := grpcMetadata.Pairs("authorization", "bearer yolo")
+			md := grpcMetadata.Pairs("root-authorization-type", "smple")
+			md.Append("authorization", "bearer yolo")
+			md.Append("root-authorization", "bearer yoohoo")
 			if _, err := cl.Ping(metadata.MD(md).ToOutgoing(ctx), &testpb.PingRequest{Value: "example"}); err != nil {
 				return err
 			}

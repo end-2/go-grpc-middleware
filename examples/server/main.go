@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
+	"github.com/grpc-ecosystem/go-grpc-middleware/examples/v2/server/custom_auth"
 	grpcprom "github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus"
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors"
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/auth"
@@ -25,7 +26,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel"
 	stdout "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/propagation"
@@ -103,20 +103,6 @@ func main() {
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 	defer func() { _ = exporter.Shutdown(context.Background()) }()
 
-	// Setup custom auth.
-	authFn := func(ctx context.Context) (context.Context, error) {
-		token, err := auth.AuthFromMD(ctx, "bearer")
-		if err != nil {
-			return nil, err
-		}
-		// TODO: This is example only, perform proper Oauth/OIDC verification!
-		if token != "yolo" {
-			return nil, status.Error(codes.Unauthenticated, "invalid auth token")
-		}
-		// NOTE: You can also pass the token in the context for further interceptors or gRPC service code.
-		return ctx, nil
-	}
-
 	// Setup auth matcher.
 	allButHealthZ := func(ctx context.Context, callMeta interceptors.CallMeta) bool {
 		return healthpb.Health_ServiceDesc.ServiceName != callMeta.Service
@@ -136,20 +122,14 @@ func main() {
 	grpcSrv := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
 			// Order matters e.g. tracing interceptor have to create span first for the later exemplars to work.
-			otelgrpc.UnaryServerInterceptor(),
+			// otelgrpc.UnaryServerInterceptor(),
 			srvMetrics.UnaryServerInterceptor(grpcprom.WithExemplarFromContext(exemplarFromContext)),
 			logging.UnaryServerInterceptor(interceptorLogger(rpcLogger), logging.WithFieldsFromContext(logTraceID)),
-			selector.UnaryServerInterceptor(auth.UnaryServerInterceptor(authFn), selector.MatchFunc(allButHealthZ)),
+			selector.UnaryServerInterceptor(auth.UnaryServerInterceptor(custom_auth.Authorization), selector.MatchFunc(allButHealthZ)),
 			recovery.UnaryServerInterceptor(recovery.WithRecoveryHandler(grpcPanicRecoveryHandler)),
 		),
-		grpc.ChainStreamInterceptor(
-			otelgrpc.StreamServerInterceptor(),
-			srvMetrics.StreamServerInterceptor(grpcprom.WithExemplarFromContext(exemplarFromContext)),
-			logging.StreamServerInterceptor(interceptorLogger(rpcLogger), logging.WithFieldsFromContext(logTraceID)),
-			selector.StreamServerInterceptor(auth.StreamServerInterceptor(authFn), selector.MatchFunc(allButHealthZ)),
-			recovery.StreamServerInterceptor(recovery.WithRecoveryHandler(grpcPanicRecoveryHandler)),
-		),
 	)
+
 	t := &testpb.TestPingService{}
 	testpb.RegisterTestServiceServer(grpcSrv, t)
 	srvMetrics.InitializeMetrics(grpcSrv)
